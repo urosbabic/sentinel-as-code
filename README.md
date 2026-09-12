@@ -84,25 +84,25 @@ sentinel-as-code/
 
 ### 1. Azure RBAC Permissions
 The App Registration configured for GitHub Actions requires:
-- **Microsoft Sentinel Contributor** on the target Resource Group / Workspace (`sentinel-rg` / `sentinel-law`).
+- **Microsoft Sentinel Contributor** on the target Resource Group / Workspace.
 - **Logic Apps Contributor** *(if deploying Playbooks)*.
 
 ### 2. Federated Identity Credential
 Configured on the Microsoft Entra App Registration:
 - **Issuer:** `https://token.actions.githubusercontent.com`
-- **Subject:** `repo:urosbabic/sentinel-as-code:ref:refs/heads/main`
+- **Subject:** `repo:<github-organization>/<repository-name>:ref:refs/heads/main`
 - **Audience:** `api://AzureADTokenExchange`
 
 ### 3. GitHub Secrets
 Configure the following secrets in **Settings > Secrets and variables > Actions**:
 
-| Secret Name | Value / Description |
+| Secret Name | Description |
 | :--- | :--- |
-| `AZURE_CLIENT_ID` | `527ef030-2856-4a71-99df-90285b4175ee` |
-| `AZURE_TENANT_ID` | `83a97caa-ea6c-4849-8077-441cd6e3c0dc` |
-| `AZURE_SUBSCRIPTION_ID` | `6ad437fe-2b06-40f9-8409-0d6cd0dc0e37` |
-| `AZURE_RESOURCE_GROUP` | `sentinel-rg` |
-| `AZURE_WORKSPACE_NAME` | `sentinel-law` |
+| `AZURE_CLIENT_ID` | Application (Client) ID of the Entra App Registration |
+| `AZURE_TENANT_ID` | Microsoft Entra Directory (Tenant) ID |
+| `AZURE_SUBSCRIPTION_ID` | Azure Subscription ID hosting Sentinel |
+| `AZURE_RESOURCE_GROUP` | Target Azure Resource Group name |
+| `AZURE_WORKSPACE_NAME` | Target Microsoft Sentinel / Log Analytics Workspace name |
 
 ---
 
