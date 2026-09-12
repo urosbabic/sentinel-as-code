@@ -44,25 +44,6 @@ jobs:
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module -Name SentinelARConverter -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue
 
-      - name: Convert YAML Detection Rules to ARM Templates
-        shell: pwsh
-        run: |
-          $publishPath = "${{ github.workspace }}\MicrosoftSentinel\Detections"
-          if (Test-Path $publishPath) {
-            $yamlFiles = Get-ChildItem -Path $publishPath -Recurse -Include *.yaml, *.yml
-            Write-Host "Found $($yamlFiles.Count) YAML rule file(s) to convert..."
-            foreach ($file in $yamlFiles) {
-              try {
-                Convert-SentinelARYamlToArm -Filename $file.FullName -UseOriginalFilename
-                Write-Host "✅ Converted $($file.Name)"
-                Remove-Item $file.FullName -Force
-              }
-              catch {
-                Write-Warning "Failed to convert $($file.Name): $($_.Exception.Message)"
-              }
-            }
-          }
-
       - name: Deploy Analytic Rules & Content to Microsoft Sentinel
         shell: pwsh
         run: |

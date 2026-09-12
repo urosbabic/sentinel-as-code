@@ -10,48 +10,56 @@ param(
     [string]$WorkspaceName = $env:AZURE_WORKSPACE_NAME,
 
     [Parameter(Mandatory = $false)]
-    [string]$RootPath = "$PSScriptRoot\..\MicrosoftSentinel"
+    [string]$DetectionsPath = "$PSScriptRoot\..\MicrosoftSentinel\Detections"
 )
 
 $ErrorActionPreference = 'Continue'
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "🚀 Microsoft Sentinel Detection-as-Code Direct Deployment Engine" -ForegroundColor Cyan
+Write-Host "🚀 Microsoft Sentinel Detection-as-Code Deployment Engine" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "Subscription ID : $SubscriptionId"
 Write-Host "Resource Group  : $ResourceGroupName"
 Write-Host "Workspace Name  : $WorkspaceName"
-Write-Host "Content Path    : $RootPath"
+Write-Host "Detections Path : $DetectionsPath"
 Write-Host "==========================================================" -ForegroundColor Cyan
 
-# 1. Postavljanje aktivne pretplate
-az account set --subscription $SubscriptionId
-
-# 2. Pronalaženje svih ARM JSON fajlova detekcija i pravila
-$detectionsPath = Join-Path $RootPath "Detections"
-$ruleFiles = Get-ChildItem -Path $detectionsPath -Filter "*.json" -Recurse -ErrorAction SilentlyContinue
-
-Write-Host "`n🔍 Pronađeno $($ruleFiles.Count) analitičkih pravila za deployment..." -ForegroundColor Yellow
+# 1. Konvertovanje svih YAML pravila u JSON ARM strukture u memoriji
+$yamlFiles = Get-ChildItem -Path $DetectionsPath -Recurse -Include *.yaml, *.yml | Where-Object { $_.Name -notmatch "template\.yaml" }
+Write-Host "🔍 Pronađeno $($yamlFiles.Count) YAML detekcionih pravila za obradu..." -ForegroundColor Yellow
 
 $successCount = 0
 $failCount = 0
 $summary = @()
 
-foreach ($file in $ruleFiles) {
+foreach ($file in $yamlFiles) {
     Write-Host "`n➡️  Obrada pravila: $($file.Name)" -ForegroundColor White
     try {
-        $raw = Get-Content -Path $file.FullName -Raw | ConvertFrom-Json
-        if (-not $raw.resources -or $raw.resources.Count -eq 0) {
-            Write-Warning "  ⚠️ Fajl $($file.Name) nema 'resources' definiciju, preskačem."
+        # Konvertuj YAML u ARM JSON string preko SentinelARConverter-a
+        $armJsonString = Convert-SentinelARYamlToArm -Filename $file.FullName
+        if ([string]::IsNullOrWhiteSpace($armJsonString)) {
+            Write-Warning "  ⚠️ Konverzija nije vratila JSON za $($file.Name)"
             continue
         }
 
-        $resource = $raw.resources[0]
-        $ruleName = if ($resource.properties.displayName) { $resource.properties.displayName } else { $file.BaseName }
-        $ruleGuid = $resource.name
+        $armJson = $armJsonString | ConvertFrom-Json
+        if (-not $armJson.resources -or $armJson.resources.Count -eq 0) {
+            Write-Warning "  ⚠️ Nema 'resources' u konvertovanom JSON-u za $($file.Name)"
+            continue
+        }
 
-        # Ako nema GUID ili je generičan izraz, kreiramo konzistentan GUID na osnovu imena
-        if ([string]::IsNullOrWhiteSpace($ruleGuid) -or $ruleGuid -like "*[*") {
+        $resource = $armJson.resources[0]
+        $ruleName = if ($resource.properties.displayName) { $resource.properties.displayName } else { $file.BaseName }
+        
+        # Izvuci GUID pravila iz imena ili kreiraj deterministic GUID iz imena
+        $ruleGuid = $null
+        if ($resource.properties.alertRuleTemplateName -and $resource.properties.alertRuleTemplateName -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') {
+            $ruleGuid = $resource.properties.alertRuleTemplateName
+        }
+        elseif ($resource.name -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
+            $ruleGuid = $Matches[1]
+        }
+        else {
             $bytes = [System.Text.Encoding]::UTF8.GetBytes($ruleName)
             $md5 = [System.Security.Cryptography.MD5]::Create().ComputeHash($bytes)
             $ruleGuid = ([System.Guid]::new($md5)).ToString()
@@ -60,7 +68,7 @@ foreach ($file in $ruleFiles) {
         $kind = if ($resource.kind) { $resource.kind } else { "Scheduled" }
         $properties = $resource.properties
 
-        # Priprema payload-a za Sentinel REST API
+        # Pripremi payload za REST API
         $payloadObj = @{
             kind = $kind
             properties = $properties
@@ -73,9 +81,10 @@ foreach ($file in $ruleFiles) {
         [System.IO.File]::WriteAllText($tempFile, $body, [System.Text.Encoding]::UTF8)
 
         $azRes = az rest --method put --uri $uri --headers "Content-Type=application/json" --body "@$tempFile" 2>&1
+        $exitCode = $LASTEXITCODE
         Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
 
-        if ($LASTEXITCODE -eq 0) {
+        if ($exitCode -eq 0) {
             Write-Host "  ✅ Uspešno postavljeno: $ruleName" -ForegroundColor Green
             $successCount++
             $summary += [PSCustomObject]@{
@@ -84,17 +93,17 @@ foreach ($file in $ruleFiles) {
                 File = $file.Name
             }
         } else {
-            Write-Warning "  ⚠️ Greška pri postavljanju ($($file.Name)): $azRes"
+            Write-Warning "  ⚠️ Azure REST greška za $($file.Name): $azRes"
             $failCount++
             $summary += [PSCustomObject]@{
                 Rule = $ruleName
-                Status = "Failed"
+                Status = "Failed: $azRes"
                 File = $file.Name
             }
         }
     }
     catch {
-        Write-Warning "  ❌ Izuzetak pri obradi $($file.Name): $($_.Exception.Message)"
+        Write-Warning "  ❌ Izuzetak: $($_.Exception.Message)"
         $failCount++
         $summary += [PSCustomObject]@{
             Rule = $file.Name
@@ -113,7 +122,7 @@ Write-Host "==========================================================" -Foregro
 $summary | Format-Table -AutoSize
 
 if ($successCount -eq 0 -and $failCount -gt 0) {
-    throw "Svi pokušaji deploymenta su pali!"
+    throw "Nijedno pravilo nije uspešno deployovano!"
 }
 
-Write-Host "`n🎉 Deployment završen!" -ForegroundColor Green
+Write-Host "`n🎉 Deployment uspešno završen!" -ForegroundColor Green
