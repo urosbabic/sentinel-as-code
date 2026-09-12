@@ -1,4 +1,4 @@
-name: Deploy Microsoft Sentinel Content (Detection-as-Code)
+name: Microsoft Sentinel Detection-as-Code Pipeline
 
 on:
   push:
@@ -11,26 +11,26 @@ on:
   workflow_dispatch:
     inputs:
       dryRun:
-        description: 'Dry run validation only'
+        description: 'Dry Run Mode (Validate rules without publishing)'
         required: false
         default: false
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
 
 jobs:
-  deploy-sentinel:
-    name: Deploy Content to Microsoft Sentinel
+  sentinel-detection-pipeline:
+    name: 🚀 Sentinel Detection CI/CD
     runs-on: windows-latest
     timeout-minutes: 30
 
     steps:
-      - name: Checkout Repository
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Azure Login (OIDC)
+      - name: 🔐 Authenticate to Azure via OIDC
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -38,16 +38,27 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           enable-AzPSSession: true
 
-      - name: Install Sentinel Conversion Modules
+      - name: 🔍 Verify Target Sentinel Workspace
+        shell: pwsh
+        run: |
+          Write-Host "Target Subscription : ${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          Write-Host "Target Resource Group: ${{ secrets.AZURE_RESOURCE_GROUP }}"
+          Write-Host "Target Workspace     : ${{ secrets.AZURE_WORKSPACE_NAME }}"
+          az account show --output table
+
+      - name: 📦 Install Sentinel Conversion Tools
         shell: pwsh
         run: |
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module -Name SentinelARConverter -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue
 
-      - name: Deploy Analytic Rules & Content to Microsoft Sentinel
+      - name: 🛡️ Deploy Detection Rules to Microsoft Sentinel
         shell: pwsh
         run: |
+          $dryRunFlag = if ("${{ inputs.dryRun }}" -eq "true") { @("-DryRun") } else { @() }
+
           & "${{ github.workspace }}\scripts\Deploy-SentinelAll.ps1" `
             -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
             -ResourceGroupName "${{ secrets.AZURE_RESOURCE_GROUP }}" `
-            -WorkspaceName "${{ secrets.AZURE_WORKSPACE_NAME }}"
+            -WorkspaceName "${{ secrets.AZURE_WORKSPACE_NAME }}" `
+            @dryRunFlag

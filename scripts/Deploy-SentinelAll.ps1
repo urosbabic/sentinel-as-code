@@ -10,48 +10,58 @@ param(
     [string]$WorkspaceName = $env:AZURE_WORKSPACE_NAME,
 
     [Parameter(Mandatory = $false)]
-    [string]$DetectionsPath = "$PSScriptRoot\..\MicrosoftSentinel\Detections"
+    [string]$DetectionsPath = "$PSScriptRoot\..\MicrosoftSentinel\Detections",
+
+    [Parameter(Mandatory = $false)]
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Continue'
 
-Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "🚀 Microsoft Sentinel Detection-as-Code Deployment Engine" -ForegroundColor Cyan
-Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "Subscription ID : $SubscriptionId"
-Write-Host "Resource Group  : $ResourceGroupName"
-Write-Host "Workspace Name  : $WorkspaceName"
-Write-Host "Detections Path : $DetectionsPath"
-Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host "=================================================================" -ForegroundColor Cyan
+Write-Host " 🛡️  MICROSOFT SENTINEL DETECTION-AS-CODE DEPLOYMENT ENGINE" -ForegroundColor Cyan
+Write-Host "=================================================================" -ForegroundColor Cyan
+Write-Host " Tenant Subscription : $SubscriptionId" -ForegroundColor Gray
+Write-Host " Resource Group      : $ResourceGroupName" -ForegroundColor Gray
+Write-Host " Sentinel Workspace  : $WorkspaceName" -ForegroundColor Gray
+Write-Host " Content Directory   : $DetectionsPath" -ForegroundColor Gray
+Write-Host " Execution Mode      : $(if ($DryRun) { 'Dry Run (Validation Only)' } else { 'Live Production Deployment' })" -ForegroundColor Yellow
+Write-Host "=================================================================" -ForegroundColor Cyan
 
-# 1. Konvertovanje svih YAML pravila u JSON ARM strukture u memoriji
+# Ensure Subscription is set
+az account set --subscription $SubscriptionId 2>&1 | Out-Null
+
 $yamlFiles = Get-ChildItem -Path $DetectionsPath -Recurse -Include *.yaml, *.yml | Where-Object { $_.Name -notmatch "template\.yaml" }
-Write-Host "🔍 Pronađeno $($yamlFiles.Count) YAML detekcionih pravila za obradu..." -ForegroundColor Yellow
+Write-Host "`n🔍 Discovered $($yamlFiles.Count) detection rule definition(s) across categories.`n" -ForegroundColor Yellow
 
+$results = @()
 $successCount = 0
 $failCount = 0
-$summary = @()
 
 foreach ($file in $yamlFiles) {
-    Write-Host "`n➡️  Obrada pravila: $($file.Name)" -ForegroundColor White
+    $category = $file.Directory.Name
+    Write-Host "⚡ Processing [$category] > $($file.Name)" -ForegroundColor White
+
     try {
-        # Konvertuj YAML u ARM JSON string preko SentinelARConverter-a
         $armJsonString = Convert-SentinelARYamlToArm -Filename $file.FullName
         if ([string]::IsNullOrWhiteSpace($armJsonString)) {
-            Write-Warning "  ⚠️ Konverzija nije vratila JSON za $($file.Name)"
+            Write-Warning "   ⚠️ Warning: Conversion yielded empty output for $($file.Name)"
             continue
         }
 
         $armJson = $armJsonString | ConvertFrom-Json
         if (-not $armJson.resources -or $armJson.resources.Count -eq 0) {
-            Write-Warning "  ⚠️ Nema 'resources' u konvertovanom JSON-u za $($file.Name)"
+            Write-Warning "   ⚠️ Warning: Missing ARM resources block in $($file.Name)"
             continue
         }
 
         $resource = $armJson.resources[0]
         $ruleName = if ($resource.properties.displayName) { $resource.properties.displayName } else { $file.BaseName }
-        
-        # Izvuci GUID pravila iz imena ili kreiraj deterministic GUID iz imena
+        $severity = if ($resource.properties.severity) { $resource.properties.severity } else { "Medium" }
+        $tactics = if ($resource.properties.tactics) { ($resource.properties.tactics -join ", ") } else { "N/A" }
+        $enabled = if ($null -ne $resource.properties.enabled) { $resource.properties.enabled } else { $true }
+
+        # Derive deterministic rule GUID
         $ruleGuid = $null
         if ($resource.properties.alertRuleTemplateName -and $resource.properties.alertRuleTemplateName -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') {
             $ruleGuid = $resource.properties.alertRuleTemplateName
@@ -66,12 +76,25 @@ foreach ($file in $yamlFiles) {
         }
 
         $kind = if ($resource.kind) { $resource.kind } else { "Scheduled" }
-        $properties = $resource.properties
 
-        # Pripremi payload za REST API
+        if ($DryRun) {
+            Write-Host "   🔎 [Dry-Run] Rule valid: '$ruleName' ($severity)" -ForegroundColor Cyan
+            $successCount++
+            $results += [PSCustomObject]@{
+                RuleName = $ruleName
+                Category = $category
+                Severity = $severity
+                Tactics  = $tactics
+                Status   = "Validated"
+                GUID     = $ruleGuid
+            }
+            continue
+        }
+
+        # Build payload for Sentinel REST API
         $payloadObj = @{
-            kind = $kind
-            properties = $properties
+            kind       = $kind
+            properties = $resource.properties
         }
         $body = $payloadObj | ConvertTo-Json -Depth 10
 
@@ -85,44 +108,101 @@ foreach ($file in $yamlFiles) {
         Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
 
         if ($exitCode -eq 0) {
-            Write-Host "  ✅ Uspešno postavljeno: $ruleName" -ForegroundColor Green
+            Write-Host "   ✅ Deployed: '$ruleName' ($severity)" -ForegroundColor Green
             $successCount++
-            $summary += [PSCustomObject]@{
-                Rule = $ruleName
-                Status = "Deployed"
-                File = $file.Name
+            $results += [PSCustomObject]@{
+                RuleName = $ruleName
+                Category = $category
+                Severity = $severity
+                Tactics  = $tactics
+                Status   = "Deployed"
+                GUID     = $ruleGuid
             }
-        } else {
-            Write-Warning "  ⚠️ Azure REST greška za $($file.Name): $azRes"
+        }
+        else {
+            Write-Warning "   ❌ Deployment failed: $azRes"
             $failCount++
-            $summary += [PSCustomObject]@{
-                Rule = $ruleName
-                Status = "Failed: $azRes"
-                File = $file.Name
+            $results += [PSCustomObject]@{
+                RuleName = $ruleName
+                Category = $category
+                Severity = $severity
+                Tactics  = $tactics
+                Status   = "Failed"
+                GUID     = $ruleGuid
             }
         }
     }
     catch {
-        Write-Warning "  ❌ Izuzetak: $($_.Exception.Message)"
+        Write-Warning "   ❌ Error parsing $($file.Name): $($_.Exception.Message)"
         $failCount++
-        $summary += [PSCustomObject]@{
-            Rule = $file.Name
-            Status = "Exception: $($_.Exception.Message)"
-            File = $file.Name
+        $results += [PSCustomObject]@{
+            RuleName = $file.BaseName
+            Category = $category
+            Severity = "Unknown"
+            Tactics  = "N/A"
+            Status   = "Error"
+            GUID     = "N/A"
         }
     }
 }
 
-Write-Host "`n==========================================================" -ForegroundColor Cyan
-Write-Host "📊 Rezultati Sentinel Deployment-a:" -ForegroundColor Cyan
-Write-Host "  ✅ Uspešno: $successCount" -ForegroundColor Green
-Write-Host "  ⚠️ Neuspešno: $failCount" -ForegroundColor Red
-Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host "`n=================================================================" -ForegroundColor Cyan
+Write-Host " 📊 DEPLOYMENT SUMMARY & METRICS" -ForegroundColor Cyan
+Write-Host "=================================================================" -ForegroundColor Cyan
+Write-Host "  ✅ Succeeded : $successCount" -ForegroundColor Green
+Write-Host "  ❌ Failed    : $failCount" -ForegroundColor $(if ($failCount -gt 0) { "Red" } else { "Gray" })
+Write-Host "  📦 Total     : $($results.Count)" -ForegroundColor White
+Write-Host "=================================================================`n" -ForegroundColor Cyan
 
-$summary | Format-Table -AutoSize
+$results | Format-Table RuleName, Category, Severity, Status -AutoSize
 
-if ($successCount -eq 0 -and $failCount -gt 0) {
-    throw "Nijedno pravilo nije uspešno deployovano!"
+# Generate GitHub Step Summary (Rich Markdown for Conference Demo)
+if ($env:GITHUB_STEP_SUMMARY) {
+    $summaryMd = @"
+# 🛡️ Microsoft Sentinel Detection-as-Code Deployment Report
+
+### 📋 Environment Details
+| Property | Value |
+| :--- | :--- |
+| **Azure Subscription** | `$SubscriptionId` |
+| **Resource Group** | `$ResourceGroupName` |
+| **Sentinel Workspace** | `$WorkspaceName` |
+| **Authentication** | \`OIDC Federated Identity (Workload Identity Federation)\` |
+| **Total Rules Evaluated** | **$($results.Count)** |
+| **Status** | $(if ($failCount -eq 0) { '✅ **All Rules Deployed Successfully**' } else { "⚠️ **$failCount Rule(s) Failed**" }) |
+
+---
+
+### 🚀 Deployed Detection Rules
+
+| Status | Rule Name | Category | Severity | MITRE ATT&CK Tactics |
+| :---: | :--- | :--- | :---: | :--- |
+"@
+
+    foreach ($item in $results) {
+        $statusIcon = switch ($item.Status) {
+            "Deployed"  { "🟢 Deployed" }
+            "Validated" { "🔵 Validated" }
+            default     { "🔴 Failed" }
+        }
+
+        $sevBadge = switch ($item.Severity) {
+            "High"          { "🔴 High" }
+            "Medium"        { "🟠 Medium" }
+            "Low"           { "🟡 Low" }
+            "Informational" { "⚪ Info" }
+            default         { $item.Severity }
+        }
+
+        $summaryMd += "`n| $statusIcon | **$($item.RuleName)** | `$($item.Category)` | $sevBadge | $($item.Tactics) |"
+    }
+
+    $summaryMd += "`n`n> *Report generated automatically by Detection-as-Code CI/CD Pipeline on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')*"
+
+    Set-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summaryMd -Encoding UTF8
+    Write-Host "📄 GitHub Step Summary markdown generated." -ForegroundColor Green
 }
 
-Write-Host "`n🎉 Deployment uspešno završen!" -ForegroundColor Green
+if ($successCount -eq 0 -and $failCount -gt 0) {
+    throw "All detection deployments failed."
+}
