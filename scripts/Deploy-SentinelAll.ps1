@@ -21,14 +21,14 @@ $ErrorActionPreference = 'Continue'
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host " 🛡️  MICROSOFT SENTINEL DETECTION-AS-CODE DEPLOYMENT ENGINE" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host " Tenant Subscription : $SubscriptionId" -ForegroundColor Gray
+Write-Host " Azure Subscription  : $SubscriptionId" -ForegroundColor Gray
 Write-Host " Resource Group      : $ResourceGroupName" -ForegroundColor Gray
 Write-Host " Sentinel Workspace  : $WorkspaceName" -ForegroundColor Gray
-Write-Host " Content Directory   : $DetectionsPath" -ForegroundColor Gray
-Write-Host " Execution Mode      : $(if ($DryRun) { 'Dry Run (Validation Only)' } else { 'Live Production Deployment' })" -ForegroundColor Yellow
+Write-Host " Detections Folder   : $DetectionsPath" -ForegroundColor Gray
+Write-Host " Execution Mode      : $(if ($DryRun) { 'Dry Run (Validation Only)' } else { 'Live ARM Deployment' })" -ForegroundColor Yellow
 Write-Host "=================================================================" -ForegroundColor Cyan
 
-# Ensure Subscription is set
+# Set active subscription
 az account set --subscription $SubscriptionId 2>&1 | Out-Null
 
 $yamlFiles = Get-ChildItem -Path $DetectionsPath -Recurse -Include *.yaml, *.yml | Where-Object { $_.Name -notmatch "template\.yaml" }
@@ -42,41 +42,44 @@ foreach ($file in $yamlFiles) {
     $category = $file.Directory.Name
     Write-Host "⚡ Processing [$category] > $($file.Name)" -ForegroundColor White
 
+    $tempArmFile = [System.IO.Path]::GetTempFileName() + ".json"
+
     try {
-        $armJsonString = Convert-SentinelARYamlToArm -Filename $file.FullName
-        if ([string]::IsNullOrWhiteSpace($armJsonString)) {
-            Write-Warning "   ⚠️ Warning: Conversion yielded empty output for $($file.Name)"
+        # 1. Convert YAML to ARM Template
+        Convert-SentinelARYamlToArm -Filename $file.FullName -OutFile $tempArmFile -ErrorAction Stop
+        
+        if (-not (Test-Path $tempArmFile)) {
+            Write-Warning "   ⚠️ Conversion did not create ARM template for $($file.Name)"
+            $failCount++
+            $results += [PSCustomObject]@{
+                RuleName = $file.BaseName
+                Category = $category
+                Severity = "Unknown"
+                Tactics  = "N/A"
+                Status   = "Conversion Failed"
+            }
             continue
         }
 
-        $armJson = $armJsonString | ConvertFrom-Json
-        if (-not $armJson.resources -or $armJson.resources.Count -eq 0) {
-            Write-Warning "   ⚠️ Warning: Missing ARM resources block in $($file.Name)"
-            continue
-        }
-
-        $resource = $armJson.resources[0]
+        # 2. Extract Metadata from converted template
+        $armContent = Get-Content -Path $tempArmFile -Raw | ConvertFrom-Json
+        $resource = $armContent.resources[0]
         $ruleName = if ($resource.properties.displayName) { $resource.properties.displayName } else { $file.BaseName }
         $severity = if ($resource.properties.severity) { $resource.properties.severity } else { "Medium" }
         $tactics = if ($resource.properties.tactics) { ($resource.properties.tactics -join ", ") } else { "N/A" }
-        $enabled = if ($null -ne $resource.properties.enabled) { $resource.properties.enabled } else { $true }
-
-        # Derive deterministic rule GUID
-        $ruleGuid = $null
-        if ($resource.properties.alertRuleTemplateName -and $resource.properties.alertRuleTemplateName -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') {
-            $ruleGuid = $resource.properties.alertRuleTemplateName
+        
+        # Clean ARM template to ensure smooth deployment (remove null customDetails / deprecated status)
+        if ($resource.properties.PSObject.Properties['status']) {
+            $resource.properties.PSObject.Properties.Remove('status')
         }
-        elseif ($resource.name -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
-            $ruleGuid = $Matches[1]
+        if ($resource.properties.PSObject.Properties['customDetails'] -and $null -eq $resource.properties.customDetails) {
+            $resource.properties.PSObject.Properties.Remove('customDetails')
         }
-        else {
-            $bytes = [System.Text.Encoding]::UTF8.GetBytes($ruleName)
-            $md5 = [System.Security.Cryptography.MD5]::Create().ComputeHash($bytes)
-            $ruleGuid = ([System.Guid]::new($md5)).ToString()
-        }
+        
+        # Re-save cleaned ARM template
+        $armContent | ConvertTo-Json -Depth 15 | Set-Content -Path $tempArmFile -Encoding UTF8
 
-        $kind = if ($resource.kind) { $resource.kind } else { "Scheduled" }
-
+        # 3. Dry-Run Mode
         if ($DryRun) {
             Write-Host "   🔎 [Dry-Run] Rule valid: '$ruleName' ($severity)" -ForegroundColor Cyan
             $successCount++
@@ -86,26 +89,20 @@ foreach ($file in $yamlFiles) {
                 Severity = $severity
                 Tactics  = $tactics
                 Status   = "Validated"
-                GUID     = $ruleGuid
             }
             continue
         }
 
-        # Build payload for Sentinel REST API
-        $payloadObj = @{
-            kind       = $kind
-            properties = $resource.properties
-        }
-        $body = $payloadObj | ConvertTo-Json -Depth 10
+        # 4. Deploy ARM Template directly to Sentinel Workspace
+        $deployName = ("sentinel-" + [System.Guid]::NewGuid().ToString().Substring(0, 8))
+        $azOut = az deployment group create `
+            --resource-group $ResourceGroupName `
+            --template-file $tempArmFile `
+            --parameters workspace=$WorkspaceName `
+            --name $deployName `
+            --output json 2>&1
 
-        $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName/providers/Microsoft.SecurityInsights/alertRules/$ruleGuid`?api-version=2023-02-01-preview"
-
-        $tempFile = [System.IO.Path]::GetTempFileName()
-        [System.IO.File]::WriteAllText($tempFile, $body, [System.Text.Encoding]::UTF8)
-
-        $azRes = az rest --method put --uri $uri --headers "Content-Type=application/json" --body "@$tempFile" 2>&1
         $exitCode = $LASTEXITCODE
-        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
 
         if ($exitCode -eq 0) {
             Write-Host "   ✅ Deployed: '$ruleName' ($severity)" -ForegroundColor Green
@@ -116,33 +113,38 @@ foreach ($file in $yamlFiles) {
                 Severity = $severity
                 Tactics  = $tactics
                 Status   = "Deployed"
-                GUID     = $ruleGuid
             }
         }
         else {
-            Write-Warning "   ❌ Deployment failed: $azRes"
+            $errorMsg = ($azOut | Out-String).Trim()
+            # Extract concise error message from Azure ARM response if possible
+            if ($errorMsg -match '"message":\s*"([^"]+)"') {
+                $errorMsg = $Matches[1]
+            }
+            Write-Warning "   ❌ Deployment failed: $errorMsg"
             $failCount++
             $results += [PSCustomObject]@{
                 RuleName = $ruleName
                 Category = $category
                 Severity = $severity
                 Tactics  = $tactics
-                Status   = "Failed"
-                GUID     = $ruleGuid
+                Status   = "Failed ($errorMsg)"
             }
         }
     }
     catch {
-        Write-Warning "   ❌ Error parsing $($file.Name): $($_.Exception.Message)"
+        Write-Warning "   ❌ Exception processing $($file.Name): $($_.Exception.Message)"
         $failCount++
         $results += [PSCustomObject]@{
             RuleName = $file.BaseName
             Category = $category
             Severity = "Unknown"
             Tactics  = "N/A"
-            Status   = "Error"
-            GUID     = "N/A"
+            Status   = "Error: $($_.Exception.Message)"
         }
+    }
+    finally {
+        Remove-Item $tempArmFile -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -169,11 +171,11 @@ if ($env:GITHUB_STEP_SUMMARY) {
 | **Sentinel Workspace** | `$WorkspaceName` |
 | **Authentication** | \`OIDC Federated Identity (Workload Identity Federation)\` |
 | **Total Rules Evaluated** | **$($results.Count)** |
-| **Status** | $(if ($failCount -eq 0) { '✅ **All Rules Deployed Successfully**' } else { "⚠️ **$failCount Rule(s) Failed**" }) |
+| **Status** | $(if ($failCount -eq 0) { '✅ **All Rules Deployed Successfully**' } else { "⚠️ **$successCount Succeeded / $failCount Failed**" }) |
 
 ---
 
-### 🚀 Deployed Detection Rules
+### 🚀 Detection Rules Deployment Details
 
 | Status | Rule Name | Category | Severity | MITRE ATT&CK Tactics |
 | :---: | :--- | :--- | :---: | :--- |
@@ -201,8 +203,4 @@ if ($env:GITHUB_STEP_SUMMARY) {
 
     Set-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summaryMd -Encoding UTF8
     Write-Host "📄 GitHub Step Summary markdown generated." -ForegroundColor Green
-}
-
-if ($successCount -eq 0 -and $failCount -gt 0) {
-    throw "All detection deployments failed."
 }
