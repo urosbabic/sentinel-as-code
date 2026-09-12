@@ -204,3 +204,4 @@ if ($env:GITHUB_STEP_SUMMARY) {
     Set-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summaryMd -Encoding UTF8
     Write-Host "📄 GitHub Step Summary markdown generated." -ForegroundColor Green
 }
+# Updated deployment engine 09/12/2026 18:07:16
