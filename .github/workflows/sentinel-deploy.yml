@@ -6,23 +6,15 @@ on:
       - main
     paths:
       - 'MicrosoftSentinel/**'
+      - 'scripts/**'
       - '.github/workflows/sentinel-deploy.yml'
-      - '.github/workflows/azure-sentinel-deploy.ps1'
   workflow_dispatch:
     inputs:
-      contentTypes:
-        description: 'Content types to deploy (e.g. AnalyticsRule,HuntingQuery,Parser,Workbook,Playbook)'
+      dryRun:
+        description: 'Dry run validation only'
         required: false
-        default: 'AnalyticsRule,HuntingQuery,Parser,Workbook'
-        type: string
-      smartDeployment:
-        description: 'Smart deployment (only deploy changed files)'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - 'false'
-          - 'true'
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -32,58 +24,25 @@ jobs:
   deploy-sentinel:
     name: Deploy Content to Microsoft Sentinel
     runs-on: windows-latest
-    timeout-minutes: 45
-
-    env:
-      resourceGroupName: ${{ secrets.AZURE_RESOURCE_GROUP || vars.RESOURCE_GROUP || 'sentinel-rg' }}
-      workspaceName: ${{ secrets.AZURE_WORKSPACE_NAME || vars.WORKSPACE_NAME || 'sentinel-law' }}
-      workspaceId: ${{ secrets.WORKSPACE_ID }}
-      directory: '${{ github.workspace }}'
-      cloudEnv: 'AzureCloud'
-      contentTypes: ${{ inputs.contentTypes || 'AnalyticsRule,HuntingQuery,Parser,Workbook' }}
-      branch: 'main'
-      sourceControlId: 'sentinel-as-code-pipeline'
-      rootDirectory: '${{ github.workspace }}'
-      githubAuthToken: ${{ secrets.GITHUB_TOKEN }}
-      smartDeployment: ${{ inputs.smartDeployment || 'false' }}
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Azure Login (Attempt 1)
-        id: login1
-        continue-on-error: true
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID || secrets.SENTINEL_CLIENTID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID || secrets.SENTINEL_TENANTID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || secrets.SENTINEL_SUBSCRIPTIONID }}
-          environment: 'AzureCloud'
-          audience: api://AzureADTokenExchange
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           enable-AzPSSession: true
 
-      - name: Wait 15s if Login 1 failed
-        if: steps.login1.outcome == 'failure'
-        shell: pwsh
-        run: Start-Sleep -Seconds 15
-
-      - name: Azure Login (Attempt 2)
-        if: steps.login1.outcome == 'failure'
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID || secrets.SENTINEL_CLIENTID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID || secrets.SENTINEL_TENANTID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || secrets.SENTINEL_SUBSCRIPTIONID }}
-          environment: 'AzureCloud'
-          audience: api://AzureADTokenExchange
-          enable-AzPSSession: true
-
-      - name: Install Sentinel Modules
+      - name: Install Sentinel Conversion Modules
         shell: pwsh
         run: |
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-          Install-Module -Name SentinelARConverter -Scope CurrentUser -Force -AllowClobber
+          Install-Module -Name SentinelARConverter -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue
 
       - name: Convert YAML Detection Rules to ARM Templates
         shell: pwsh
@@ -104,9 +63,10 @@ jobs:
             }
           }
 
-      - name: Deploy Content to Microsoft Sentinel
-        uses: azure/powershell@v2
-        with:
-          azPSVersion: 'latest'
-          inlineScript: |
-            & "${{ github.workspace }}\.github\workflows\azure-sentinel-deploy.ps1"
+      - name: Deploy Analytic Rules & Content to Microsoft Sentinel
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}\scripts\Deploy-SentinelAll.ps1" `
+            -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
+            -ResourceGroupName "${{ secrets.AZURE_RESOURCE_GROUP }}" `
+            -WorkspaceName "${{ secrets.AZURE_WORKSPACE_NAME }}"
