@@ -1,0 +1,64 @@
+name: Microsoft Sentinel Detection-as-Code CI/CD
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'Detections/**'
+      - 'scripts/**'
+      - '.github/workflows/sentinel-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: 'Dry run validation only (do not deploy)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  validate-and-deploy:
+    name: Deploy Sentinel Content
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Validate Azure Context & Workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Verifying Azure Authentication and Microsoft Sentinel Context..."
+          
+          az account show --output table
+
+          $sub = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          $rg = "${{ secrets.AZURE_RESOURCE_GROUP }}"
+          $ws = "${{ secrets.AZURE_WORKSPACE_NAME }}"
+
+          Write-Host "Target Subscription : $sub"
+          Write-Host "Target ResourceGroup: $rg"
+          Write-Host "Target Workspace    : $ws"
+
+      - name: Deploy Analytic Rules to Sentinel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          
+          ./scripts/Deploy-SentinelRules.ps1 `
+            -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
+            -ResourceGroupName "${{ secrets.AZURE_RESOURCE_GROUP }}" `
+            -WorkspaceName "${{ secrets.AZURE_WORKSPACE_NAME }}"

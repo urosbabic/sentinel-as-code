@@ -1,0 +1,63 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "name": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Multiple Failed Login Attempts (Brute Force Detection)",
+        "description": "Identifies user accounts with multiple consecutive failed sign-in attempts within a short timeframe, which may indicate a brute force or credential guessing attack.",
+        "severity": "Medium",
+        "enabled": true,
+        "query": "SigninLogs\n| where ResultType != \"0\"\n| summarize FailedAttempts = count() by bin(TimeGenerated, 10m), UserPrincipalName, IPAddress, AppDisplayName\n| where FailedAttempts >= 10\n| extend AccountCustomEntity = UserPrincipalName, IPCustomEntity = IPAddress",
+        "queryFrequency": "PT15M",
+        "queryPeriod": "PT15M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": false,
+        "tactics": [
+          "CredentialAccess"
+        ],
+        "techniques": [
+          "T1110"
+        ],
+        "entityMappings": [
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "identifier": "FullName",
+                "columnName": "AccountCustomEntity"
+              }
+            ]
+          },
+          {
+            "entityType": "IP",
+            "fieldMappings": [
+              {
+                "identifier": "Address",
+                "columnName": "IPCustomEntity"
+              }
+            ]
+          }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "Selected",
+            "groupByEntities": [
+              "Account"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

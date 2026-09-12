@@ -1,0 +1,66 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "resources": [
+    {
+      "type": "Microsoft.SecurityInsights/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "name": "b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Suspicious Email Forwarding / Inbox Rule Created",
+        "description": "Identifies when a new inbox rule is created in Exchange Online that forwards emails to an external domain or moves emails to hidden folders, commonly used by attackers to maintain persistence or exfiltrate data.",
+        "severity": "High",
+        "enabled": true,
+        "query": "OfficeActivity\n| where RecordType =~ \"ExchangeItem\" or RecordType =~ \"ExchangeAdmin\"\n| where Operation in~ (\"New-InboxRule\", \"Set-InboxRule\")\n| extend RuleParameters = tostring(parse_json(Parameters))\n| where RuleParameters has_any (\"ForwardTo\", \"ForwardAsAttachmentTo\", \"RedirectTo\", \"DeleteMessage\")\n| project TimeGenerated, UserId, Operation, ClientIP, RuleParameters\n| extend AccountCustomEntity = UserId, IPCustomEntity = ClientIP",
+        "queryFrequency": "PT30M",
+        "queryPeriod": "PT30M",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": false,
+        "tactics": [
+          "Persistence",
+          "Collection",
+          "Exfiltration"
+        ],
+        "techniques": [
+          "T1114.003",
+          "T1137"
+        ],
+        "entityMappings": [
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "identifier": "FullName",
+                "columnName": "AccountCustomEntity"
+              }
+            ]
+          },
+          {
+            "entityType": "IP",
+            "fieldMappings": [
+              {
+                "identifier": "Address",
+                "columnName": "IPCustomEntity"
+              }
+            ]
+          }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "Selected",
+            "groupByEntities": [
+              "Account"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
