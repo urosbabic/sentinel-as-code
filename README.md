@@ -1,4 +1,4 @@
-# Microsoft Sentinel Detection-as-Code (CI/CD Pipeline)
+# Microsoft Sentinel-as-a-Code (CI/CD Pipeline)
 
 [![Microsoft Sentinel](https://img.shields.io/badge/Microsoft%20Sentinel-Cloud%20Native%20SIEM-blue?logo=azure-devops)](https://azure.microsoft.com/services/microsoft-sentinel/)
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF?logo=github-actions)](https://github.com/features/actions)
