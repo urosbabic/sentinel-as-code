@@ -198,10 +198,10 @@ if ($env:GITHUB_STEP_SUMMARY) {
 
 | Property | Value |
 | :--- | :--- |
-| **Azure Subscription** | `$($SubscriptionId)` |
-| **Resource Group** | `$($ResourceGroupName)` |
-| **Sentinel Workspace** | `$($WorkspaceName)` |
-| **Authentication** | ``OIDC Federated Identity (Workload Identity Federation)`` |
+| **Azure Subscription** | $SubscriptionId |
+| **Resource Group** | $ResourceGroupName |
+| **Sentinel Workspace** | $WorkspaceName |
+| **Authentication** | OIDC Federated Identity (Workload Identity Federation) |
 | **Total Rules Evaluated** | **$($results.Count)** |
 | **Status** | $statusText |
 
@@ -228,7 +228,7 @@ if ($env:GITHUB_STEP_SUMMARY) {
             default         { $item.Severity }
         }
 
-        $summaryMd += "`n| $statusIcon | **$($item.RuleName)** | ``$($item.Category)`` | $sevBadge | $($item.Tactics) |"
+        $summaryMd += "`n| $statusIcon | **$($item.RuleName)** | $($item.Category) | $sevBadge | $($item.Tactics) |"
     }
 
     $summaryMd += "`n`n> *Report generated automatically by Detection-as-Code CI/CD Pipeline on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')*"
