@@ -44,14 +44,14 @@ foreach ($file in $yamlFiles) {
 
     try {
         # 1. Convert YAML to ARM Template in memory
-        $armJsonString = Convert-SentinelARYamlToArm -Filename $file.FullName
+        $armJsonString = Convert-SentinelARYamlToArm -Filename $file.FullName -ErrorAction SilentlyContinue
         if ([string]::IsNullOrWhiteSpace($armJsonString)) {
             Write-Warning "   ⚠️ Conversion returned empty for $($file.Name)"
             $failCount++
             $results += [PSCustomObject]@{
                 RuleName = $file.BaseName
                 Category = $category
-                Severity = "Unknown"
+                Severity = "Medium"
                 Tactics  = "N/A"
                 Status   = "Conversion Failed"
             }
@@ -65,7 +65,7 @@ foreach ($file in $yamlFiles) {
             $results += [PSCustomObject]@{
                 RuleName = $file.BaseName
                 Category = $category
-                Severity = "Unknown"
+                Severity = "Medium"
                 Tactics  = "N/A"
                 Status   = "Invalid Template"
             }
@@ -118,6 +118,9 @@ foreach ($file in $yamlFiles) {
         if ($props.PSObject.Properties['templateVersion']) {
             $props.PSObject.Properties.Remove('templateVersion')
         }
+        if ($props.PSObject.Properties['subTechniques']) {
+            $props.PSObject.Properties.Remove('subTechniques')
+        }
 
         $payloadObj = @{
             kind       = $kind
@@ -157,7 +160,7 @@ foreach ($file in $yamlFiles) {
                 Category = $category
                 Severity = $severity
                 Tactics  = $tactics
-                Status   = "Failed ($errorMsg)"
+                Status   = "Failed"
             }
         }
     }
@@ -167,9 +170,9 @@ foreach ($file in $yamlFiles) {
         $results += [PSCustomObject]@{
             RuleName = $file.BaseName
             Category = $category
-            Severity = "Unknown"
+            Severity = "Medium"
             Tactics  = "N/A"
-            Status   = "Error: $($_.Exception.Message)"
+            Status   = "Error"
         }
     }
 }
@@ -186,18 +189,21 @@ $results | Format-Table RuleName, Category, Severity, Status -AutoSize
 
 # Generate GitHub Step Summary (Rich Markdown for Conference Demo)
 if ($env:GITHUB_STEP_SUMMARY) {
+    $statusText = if ($failCount -eq 0) { "✅ **All $successCount Rules Deployed Successfully**" } else { "⚠️ **$successCount Succeeded / $failCount Failed**" }
+    
     $summaryMd = @"
 # 🛡️ Microsoft Sentinel Detection-as-Code Deployment Report
 
 ### 📋 Environment Details
+
 | Property | Value |
 | :--- | :--- |
-| **Azure Subscription** | `$SubscriptionId` |
-| **Resource Group** | `$ResourceGroupName` |
-| **Sentinel Workspace** | `$WorkspaceName` |
-| **Authentication** | \`OIDC Federated Identity (Workload Identity Federation)\` |
+| **Azure Subscription** | `$($SubscriptionId)` |
+| **Resource Group** | `$($ResourceGroupName)` |
+| **Sentinel Workspace** | `$($WorkspaceName)` |
+| **Authentication** | ``OIDC Federated Identity (Workload Identity Federation)`` |
 | **Total Rules Evaluated** | **$($results.Count)** |
-| **Status** | $(if ($failCount -eq 0) { '✅ **All Rules Deployed Successfully**' } else { "⚠️ **$successCount Succeeded / $failCount Failed**" }) |
+| **Status** | $statusText |
 
 ---
 
@@ -222,7 +228,7 @@ if ($env:GITHUB_STEP_SUMMARY) {
             default         { $item.Severity }
         }
 
-        $summaryMd += "`n| $statusIcon | **$($item.RuleName)** | `$($item.Category)` | $sevBadge | $($item.Tactics) |"
+        $summaryMd += "`n| $statusIcon | **$($item.RuleName)** | ``$($item.Category)`` | $sevBadge | $($item.Tactics) |"
     }
 
     $summaryMd += "`n`n> *Report generated automatically by Detection-as-Code CI/CD Pipeline on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')*"
