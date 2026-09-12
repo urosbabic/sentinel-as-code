@@ -1,0 +1,47 @@
+id: 58deb816-0939-417f-95f2-05a9dc5d0b2c
+name: Summary Rule - Demo Country
+description: Enter rule description here
+severity: Medium
+requiredDataConnectors:
+  - connectorId: YourConnectorId
+    dataTypes:
+      - YourDataType
+queryFrequency: PT5M
+queryPeriod: PT10M
+triggerOperator: gt
+triggerThreshold: 0
+status: Disabled
+tactics:
+  - Impact
+techniques:
+  - T0827
+  - T0826
+  - T0829
+  - T0831
+  - T0832
+query: |-
+  DockerFlow_CL
+  | extend DstIPLocation = geo_info_from_ip_address(dstIp)
+  | extend Country = tostring(DstIPLocation.Country)
+  | where Country in ("Russia", "China")
+entityMappings:
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: dstIp
+incidentConfiguration:
+  createIncident: true
+  groupingConfiguration:
+    enabled: false
+    reopenClosedIncident: false
+    lookbackDuration: PT5H
+    matchingMethod: AllEntities
+    groupByEntities: []
+    groupByAlertDetails: []
+    groupByCustomDetails: []
+eventGroupingSettings:
+  aggregationKind: SingleAlert
+suppressionDuration: PT5H
+suppressionEnabled: false
+version: 1.0.0
+kind: Scheduled

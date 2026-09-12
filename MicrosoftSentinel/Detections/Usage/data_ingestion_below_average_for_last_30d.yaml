@@ -1,0 +1,54 @@
+id: 138b1f92-2d9e-4547-b6ba-9d3738517f1a
+name: Data ingestion below average for last 30d
+description: Enter rule description here
+severity: Informational
+requiredDataConnectors:
+  - connectorId: YourConnectorId
+    dataTypes:
+      - YourDataType
+queryFrequency: PT5H
+queryPeriod: PT5H
+triggerOperator: gt
+triggerThreshold: 0
+tactics:
+  - Impact
+query: |
+  let lastWeekStart = ago(14d); 
+  let lastWeekEnd = ago(7d); 
+  let thirtyDaysStart = ago(30d);
+  let thirtyDaysEnd = ago(0d);
+  let averageIngestionLast30Days = toscalar(
+      Usage
+      | where IsBillable == true
+      | where TimeGenerated >= thirtyDaysStart and TimeGenerated < thirtyDaysEnd
+      | summarize avg(Quantity) / toreal(round(1024,-3))
+  );
+  Usage
+  | where IsBillable == true
+  | where TimeGenerated >= lastWeekStart and TimeGenerated < lastWeekEnd 
+  | summarize LastWeekSize = sumif(Quantity, isnotempty(DataType)) / round(1024,-3) by DataType 
+  | extend LastWeekSize = toreal(LastWeekSize)
+  | extend PercentageBelowAverage = iif(LastWeekSize < averageIngestionLast30Days, round((LastWeekSize / averageIngestionLast30Days) * 100, 2), 0.0)
+  | project DataType, LastWeekSize, PercentageBelowAverage
+  | where PercentageBelowAverage > 0
+entityMappings:
+  - entityType: Account
+    fieldMappings:
+      - identifier: FullName
+        columnName: YourColumnName
+incidentConfiguration:
+  createIncident: true
+  groupingConfiguration:
+    enabled: false
+    reopenClosedIncident: false
+    lookbackDuration: PT5H
+    matchingMethod: AllEntities
+    groupByEntities: []
+    groupByAlertDetails: []
+    groupByCustomDetails: []
+eventGroupingSettings:
+  aggregationKind: SingleAlert
+suppressionDuration: P1D
+suppressionEnabled: true
+version: 1.0.0
+kind: Scheduled

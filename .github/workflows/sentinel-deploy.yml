@@ -1,64 +1,112 @@
-name: Microsoft Sentinel Detection-as-Code CI/CD
+name: Deploy Microsoft Sentinel Content (Detection-as-Code)
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'Detections/**'
-      - 'scripts/**'
+      - 'MicrosoftSentinel/**'
       - '.github/workflows/sentinel-deploy.yml'
+      - '.github/workflows/azure-sentinel-deploy.ps1'
   workflow_dispatch:
     inputs:
-      dryRun:
-        description: 'Dry run validation only (do not deploy)'
+      contentTypes:
+        description: 'Content types to deploy (e.g. AnalyticsRule,HuntingQuery,Parser,Workbook,Playbook)'
         required: false
-        default: false
-        type: boolean
+        default: 'AnalyticsRule,HuntingQuery,Parser,Workbook'
+        type: string
+      smartDeployment:
+        description: 'Smart deployment (only deploy changed files)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 permissions:
+  contents: write
   id-token: write
-  contents: read
 
 jobs:
-  validate-and-deploy:
-    name: Deploy Sentinel Content
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  deploy-sentinel:
+    name: Deploy Content to Microsoft Sentinel
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    env:
+      resourceGroupName: ${{ secrets.AZURE_RESOURCE_GROUP || vars.RESOURCE_GROUP || 'sentinel-rg' }}
+      workspaceName: ${{ secrets.AZURE_WORKSPACE_NAME || vars.WORKSPACE_NAME || 'sentinel-law' }}
+      workspaceId: ${{ secrets.WORKSPACE_ID }}
+      directory: '${{ github.workspace }}'
+      cloudEnv: 'AzureCloud'
+      contentTypes: ${{ inputs.contentTypes || 'AnalyticsRule,HuntingQuery,Parser,Workbook' }}
+      branch: 'main'
+      sourceControlId: 'sentinel-as-code-pipeline'
+      rootDirectory: '${{ github.workspace }}'
+      githubAuthToken: ${{ secrets.GITHUB_TOKEN }}
+      smartDeployment: ${{ inputs.smartDeployment || 'false' }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Azure Login with OIDC
+      - name: Azure Login (Attempt 1)
+        id: login1
+        continue-on-error: true
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID || secrets.SENTINEL_CLIENTID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID || secrets.SENTINEL_TENANTID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || secrets.SENTINEL_SUBSCRIPTIONID }}
+          environment: 'AzureCloud'
+          audience: api://AzureADTokenExchange
+          enable-AzPSSession: true
 
-      - name: Validate Azure Context & Workspace
+      - name: Wait 15s if Login 1 failed
+        if: steps.login1.outcome == 'failure'
+        shell: pwsh
+        run: Start-Sleep -Seconds 15
+
+      - name: Azure Login (Attempt 2)
+        if: steps.login1.outcome == 'failure'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID || secrets.SENTINEL_CLIENTID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID || secrets.SENTINEL_TENANTID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || secrets.SENTINEL_SUBSCRIPTIONID }}
+          environment: 'AzureCloud'
+          audience: api://AzureADTokenExchange
+          enable-AzPSSession: true
+
+      - name: Install Sentinel Modules
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          Write-Host "Verifying Azure Authentication and Microsoft Sentinel Context..."
-          
-          az account show --output table
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name SentinelARConverter -Scope CurrentUser -Force -AllowClobber
 
-          $sub = "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-          $rg = "${{ secrets.AZURE_RESOURCE_GROUP }}"
-          $ws = "${{ secrets.AZURE_WORKSPACE_NAME }}"
-
-          Write-Host "Target Subscription : $sub"
-          Write-Host "Target ResourceGroup: $rg"
-          Write-Host "Target Workspace    : $ws"
-
-      - name: Deploy Analytic Rules to Sentinel
+      - name: Convert YAML Detection Rules to ARM Templates
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          
-          ./scripts/Deploy-SentinelRules.ps1 `
-            -SubscriptionId "${{ secrets.AZURE_SUBSCRIPTION_ID }}" `
-            -ResourceGroupName "${{ secrets.AZURE_RESOURCE_GROUP }}" `
-            -WorkspaceName "${{ secrets.AZURE_WORKSPACE_NAME }}"
+          $publishPath = "${{ github.workspace }}\MicrosoftSentinel\Detections"
+          if (Test-Path $publishPath) {
+            $yamlFiles = Get-ChildItem -Path $publishPath -Recurse -Include *.yaml, *.yml
+            Write-Host "Found $($yamlFiles.Count) YAML rule file(s) to convert..."
+            foreach ($file in $yamlFiles) {
+              try {
+                Convert-SentinelARYamlToArm -Filename $file.FullName -UseOriginalFilename
+                Write-Host "✅ Converted $($file.Name)"
+                Remove-Item $file.FullName -Force
+              }
+              catch {
+                Write-Warning "Failed to convert $($file.Name): $($_.Exception.Message)"
+              }
+            }
+          }
+
+      - name: Deploy Content to Microsoft Sentinel
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: 'latest'
+          inlineScript: |
+            & "${{ github.workspace }}\.github\workflows\azure-sentinel-deploy.ps1"
