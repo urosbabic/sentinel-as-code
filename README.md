@@ -22,33 +22,9 @@ This repository implements a production-grade **Detection-as-Code** operating mo
 
 ## 🏗️ Architecture & Deployment Flow
 
-```mermaid
-flowchart TD
-    subgraph GitHub ["GitHub Platform"]
-        Dev[SOC / SecOps Engineer] -->|Commit / Pull Request| Repo[sentinel-as-code Repository]
-        Repo -->|Trigger on push / dispatch| Actions[GitHub Actions Runner]
-    end
+<img width="726" height="868" alt="image" src="https://github.com/user-attachments/assets/e80c0fdb-3442-4fa4-87f6-a5ab7d73ee8e" />
 
-    subgraph Auth ["Authentication & Identity"]
-        Actions -->|1. Request OIDC Token| GHOIDC[GitHub OIDC Provider]
-        GHOIDC -->|2. JWT Token| Entra[Microsoft Entra ID]
-        Entra -->|3. Validate Federated Credential & Issue ARM Token| Actions
-    end
 
-    subgraph Azure ["Microsoft Azure & Sentinel"]
-        Actions -->|4. Deploy Security Content via ARM / REST API| Sentinel[Microsoft Sentinel Workspace]
-        subgraph SentinelContent ["Deployed Artifacts"]
-            AR[Analytic Rules]
-            HQ[Hunting Queries]
-            PR[ASIM Parsers / Functions]
-            WB[Workbooks & Dashboards]
-            PB[Playbooks / SOAR]
-        end
-        Sentinel --> SentinelContent
-    end
-```
-
----
 
 ## 📂 Repository Structure
 
